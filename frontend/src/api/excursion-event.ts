@@ -5,6 +5,9 @@ import type { DomainRecord } from '../types/domain';
 export async function listExcursionEvent(page = 1, pageSize = 20, search = '') {
   return request<DomainRecord[]>(`/excursions?page=${page}&pageSize=${pageSize}&search=${encodeURIComponent(search)}`);
 }
+export async function getExcursionCumulative() {
+  return request<Record<string, number>>('/excursions/cumulative');
+}
 export async function createExcursionEvent(input: Partial<DomainRecord>) {
   return request<DomainRecord>('/excursions', { method: 'POST', body: JSON.stringify(input) });
 }

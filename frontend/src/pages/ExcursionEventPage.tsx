@@ -8,6 +8,7 @@ import { useDispositionDecisionStore } from '../stores/disposition-decision';
 import { useTemperatureWindowStore } from '../stores/temperature-window';
 import { useSensorEvidenceStore } from '../stores/sensor-evidence';
 import { registerSensorEvidence } from '../api/sensor-evidence';
+import { getExcursionCumulative } from '../api/excursion-event';
 import type { DomainRecord } from '../types/domain';
 import { roleAtLeast } from '../types/domain';
 import { getSession } from '../api/client';
@@ -35,14 +36,23 @@ export default function ExcursionEventPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [pending, setPending] = useState<{ item: DomainRecord; state: string } | null>(null);
+  const [cumulative, setCumulative] = useState<Record<string, number>>({});
   const session = getSession();
   const canReport = roleAtLeast(session?.role, 'operator');
   const canReview = roleAtLeast(session?.role, 'reviewer');
-  const refresh = async () => { await Promise.all([excursions.load('excursions'), dispositions.load('dispositions'), windows.load('windows'), evidenceStore.load()]); };
+  const refresh = async () => {
+    const [, , , , totals] = await Promise.all([excursions.load('excursions'), dispositions.load('dispositions'), windows.load('windows'), evidenceStore.load(), getExcursionCumulative().catch(() => null)]);
+    if (totals) setCumulative(totals.data || {});
+  };
   useEffect(() => { void refresh(); }, [excursions.load, dispositions.load, windows.load, evidenceStore.load]);
   usePolling(refresh, 15000);
   useEffect(() => { if (selectedId === null && excursions.items[0]) setSelectedId(excursions.items[0].id); }, [excursions.items, selectedId]);
   const selected = excursions.items.find((item) => item.id === selectedId) || null;
+  const selectedRule = selected ? windows.items.find((window) => window.code === selected.windowCode) : null;
+  const selectedContainerCode = selected ? (selected.containerCode || selected.relatedCode) : '';
+  const selectedCumulative = selected ? (cumulative[selectedContainerCode] ?? 0) : 0;
+  const cumulativeLimit = selectedRule?.maxExcursionMinutes || 0;
+  const cumulativeBreached = cumulativeLimit > 0 && selectedCumulative > cumulativeLimit;
   const decision = selected ? dispositions.items.find((item) => (item.excursionCode || item.relatedCode) === selected.code) : null;
   const selectedEvidence = selected ? evidenceStore.items.filter((item) => item.excursionCode === selected.code).map((item) => `${item.code} · ${item.objectKey} · SHA256 ${item.sha256.slice(0, 10)}…`) : [];
   const critical = useMemo(() => excursions.items.filter((item) => item.riskLevel === 'critical').length, [excursions.items]);
@@ -64,8 +74,8 @@ export default function ExcursionEventPage() {
     <section className="metrics"><MetricCard label="偏差事件" value={excursions.meta.total} detail="全量可追溯" /><MetricCard label="待闭环" value={pendingCount} detail="待质量评估" /><MetricCard label="严重偏差" value={critical} detail="优先隔离" /></section>
     {(excursions.error || evidenceStore.error) && <div className="alert" role="alert">{excursions.error || evidenceStore.error}</div>}
     <section className="split-workspace"><div className="record-list">{excursions.items.map((item) => { const rule = windows.items.find((window) => window.code === item.windowCode); return <button key={item.id} className={selectedId === item.id ? 'record-row selected' : 'record-row'} onClick={() => setSelectedId(item.id)}><span><strong>{item.code}</strong><small>{item.containerCode || item.relatedCode} · {item.windowCode || '未绑定规则'}</small></span><TemperatureBadge value={item.observedTempC ?? item.metricValue} minimum={rule?.minimumCelsius} maximum={rule?.maximumCelsius} /><StatusBadge status={item.status} /></button>; })}</div>
-      <aside className="detail-pane">{selected ? <><header><div><small>{selected.code}</small><h2>{selected.name}</h2></div><StatusBadge status={selected.status} /></header><div className="detail-grid"><span><small>运输容器</small>{selected.containerCode || selected.relatedCode}</span><span><small>温控规则</small>{selected.windowCode || '-'}</span><span><small>持续时长</small>{selected.durationMinutes || 0} 分钟</span><span><small>检测时间</small>{formatDate(selected.detectedAt || selected.effectiveAt)}</span></div><h3>传感器证据</h3><EvidenceList evidence={selectedEvidence.length ? selectedEvidence : selected.sensorEvidence || selected.evidence} /><DecisionPanel decision={decision} compact />{canReview && nextExcursionState(selected) && <Button variant="contained" startIcon={<TaskAltOutlinedIcon />} onClick={() => setPending({ item: selected, state: nextExcursionState(selected) })}>{selected.status === 'open' ? '接收复核' : selected.status === 'in_review' ? '完成影响评估' : '关闭事件'}</Button>}</> : <div className="empty">选择一个偏差事件</div>}</aside></section>
-    <ConfirmDialog open={createOpen} title="登记温度偏差" onCancel={() => setCreateOpen(false)} onConfirm={() => void createExcursion()}><p>将保存容器、温控规则、峰值温度、持续时长和 MinIO 传感器证据。</p></ConfirmDialog>
+      <aside className="detail-pane">{selected ? <><header><div><small>{selected.code}</small><h2>{selected.name}</h2></div><StatusBadge status={selected.status} /></header><div className="detail-grid"><span><small>运输容器</small>{selected.containerCode || selected.relatedCode}</span><span><small>温控规则</small>{selected.windowCode || '-'}</span><span><small>持续时长</small>{selected.durationMinutes || 0} 分钟</span><span><small>检测时间</small>{formatDate(selected.detectedAt || selected.effectiveAt)}</span><span style={cumulativeBreached ? { color: '#9d2c37', fontWeight: 600 } : undefined}><small>累计超温（24h）</small>{selectedCumulative} 分钟{cumulativeLimit > 0 ? ` / 上限 ${cumulativeLimit} 分钟` : ''}{cumulativeBreached ? ' · 已越限' : ''}</span></div><h3>传感器证据</h3><EvidenceList evidence={selectedEvidence.length ? selectedEvidence : selected.sensorEvidence || selected.evidence} /><DecisionPanel decision={decision} compact />{canReview && nextExcursionState(selected) && <Button variant="contained" startIcon={<TaskAltOutlinedIcon />} onClick={() => setPending({ item: selected, state: nextExcursionState(selected) })}>{selected.status === 'open' ? '接收复核' : selected.status === 'in_review' ? '完成影响评估' : '关闭事件'}</Button>}</> : <div className="empty">选择一个偏差事件</div>}</aside></section>
+    <ConfirmDialog open={createOpen} title="登记温度偏差" onCancel={() => setCreateOpen(false)} onConfirm={() => void createExcursion()}><p>将保存容器、温控规则、峰值温度、持续时长和 MinIO 传感器证据；若该容器近 24 小时累计超温超过规则上限，本次偏差自动升级为严重并将容器转入隔离。</p></ConfirmDialog>
     <ConfirmDialog open={Boolean(pending)} title="确认偏差状态迁移" onCancel={() => setPending(null)} onConfirm={() => void transition()}><p>偏差不能跳过复核；形成影响评估时必须存在传感器证据。</p><strong>{pending?.item.status} → {pending?.state}</strong></ConfirmDialog>
   </main>;
 }

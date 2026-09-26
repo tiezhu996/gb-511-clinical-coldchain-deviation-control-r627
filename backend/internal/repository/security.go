@@ -48,6 +48,11 @@ func (s *Store[T]) Get(ctx context.Context, id uint) (T, error) {
 	err := s.db.WithContext(ctx).First(&item, id).Error
 	return item, err
 }
+func (s *Store[T]) GetByCode(ctx context.Context, code string) (T, error) {
+	var item T
+	err := s.db.WithContext(ctx).Where("code = ?", code).First(&item).Error
+	return item, err
+}
 func (s *Store[T]) Create(ctx context.Context, item *T) error {
 	return s.db.WithContext(ctx).Create(item).Error
 }

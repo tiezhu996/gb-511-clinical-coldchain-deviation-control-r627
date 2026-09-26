@@ -19,6 +19,7 @@ func NewExcursionEventHandler(s service.ExcursionEventService) *ExcursionEventHa
 func (h *ExcursionEventHandler) Register(group *gin.RouterGroup) {
 	resource := group.Group("/excursions")
 	resource.GET("", h.list)
+	resource.GET("/cumulative", h.cumulative)
 	resource.GET("/:id", h.get)
 	resource.POST("", middleware.RequireMinimumRole("operator"), h.create)
 	resource.PUT("/:id", middleware.RequireMinimumRole("reviewer"), h.update)
@@ -34,6 +35,15 @@ func (h *ExcursionEventHandler) list(c *gin.Context) {
 		return
 	}
 	util.Page(c, result.Items, result.Page, result.PageSize, result.Total)
+}
+
+func (h *ExcursionEventHandler) cumulative(c *gin.Context) {
+	totals, err := h.service.CumulativeMinutes(c.Request.Context())
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	util.OK(c, totals)
 }
 
 func (h *ExcursionEventHandler) get(c *gin.Context) {

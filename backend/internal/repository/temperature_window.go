@@ -12,6 +12,7 @@ import (
 type TemperatureWindowRepository interface {
 	List(context.Context, dto.PageQuery) (Page[model.TemperatureWindow], error)
 	Get(context.Context, uint) (model.TemperatureWindow, error)
+	GetByCode(context.Context, string) (model.TemperatureWindow, error)
 	Create(context.Context, *model.TemperatureWindow) error
 	Update(context.Context, uint, uint, *model.TemperatureWindow) error
 	Delete(context.Context, uint) error
@@ -31,6 +32,9 @@ func (r *temperatureWindowRepository) List(ctx context.Context, q dto.PageQuery)
 }
 func (r *temperatureWindowRepository) Get(ctx context.Context, id uint) (model.TemperatureWindow, error) {
 	return r.store.Get(ctx, id)
+}
+func (r *temperatureWindowRepository) GetByCode(ctx context.Context, code string) (model.TemperatureWindow, error) {
+	return r.store.GetByCode(ctx, code)
 }
 func (r *temperatureWindowRepository) Create(ctx context.Context, item *model.TemperatureWindow) error {
 	return r.store.Create(ctx, item)

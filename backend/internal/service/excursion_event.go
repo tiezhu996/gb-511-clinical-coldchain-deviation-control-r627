@@ -21,17 +21,20 @@ type ExcursionEventService interface {
 	Transition(context.Context, uint, dto.TransitionRequest, string, string) (model.ExcursionEvent, error)
 	Delete(context.Context, uint, string, string) error
 	StatusCounts(context.Context) (map[string]int64, error)
+	CumulativeMinutes(context.Context) (map[string]int64, error)
 }
 
 type excursionEventService struct {
 	repository  repository.ExcursionEventRepository
 	disposition repository.DispositionDecisionRepository
 	evidence    repository.SensorEvidenceRepository
+	window      repository.TemperatureWindowRepository
+	container   repository.TransportContainerRepository
 	security    SecurityService
 }
 
-func NewExcursionEventService(repo repository.ExcursionEventRepository, disposition repository.DispositionDecisionRepository, evidence repository.SensorEvidenceRepository, security SecurityService) ExcursionEventService {
-	return &excursionEventService{repository: repo, disposition: disposition, evidence: evidence, security: security}
+func NewExcursionEventService(repo repository.ExcursionEventRepository, disposition repository.DispositionDecisionRepository, evidence repository.SensorEvidenceRepository, window repository.TemperatureWindowRepository, container repository.TransportContainerRepository, security SecurityService) ExcursionEventService {
+	return &excursionEventService{repository: repo, disposition: disposition, evidence: evidence, window: window, container: container, security: security}
 }
 
 func (s *excursionEventService) List(ctx context.Context, query dto.PageQuery) (repository.Page[model.ExcursionEvent], error) {
@@ -69,11 +72,60 @@ func (s *excursionEventService) Create(ctx context.Context, input dto.CreateExcu
 	if item.ContainerCode == "" || item.WindowCode == "" || item.SensorEvidence == "" || item.DurationMinutes < 1 {
 		return model.ExcursionEvent{}, fmt.Errorf("%w: container, temperature window, duration and sensor evidence are required", ErrInvalidInput)
 	}
+	cumulative, limit := s.cumulativeExposure(ctx, item.ContainerCode, item.WindowCode, item.DurationMinutes)
+	breached := limit > 0 && cumulative > limit
+	if breached {
+		item.RiskLevel = "critical"
+	}
 	if err := s.repository.Create(ctx, &item); err != nil {
 		return model.ExcursionEvent{}, fmt.Errorf("create 偏差事件: %w", err)
 	}
-	_ = s.security.Audit(ctx, actor, requestID, "create", "ExcursionEvent", item.ID, "", item.Status, "created 偏差事件")
+	detail := "created 偏差事件"
+	if breached {
+		detail = fmt.Sprintf("created 偏差事件; 24h cumulative %d min exceeded window limit %d min, escalated to critical", cumulative, limit)
+		s.quarantineContainer(ctx, item.ContainerCode, actor, requestID, cumulative)
+	}
+	_ = s.security.Audit(ctx, actor, requestID, "create", "ExcursionEvent", item.ID, "", item.Status, detail)
 	return item, nil
+}
+
+// cumulativeExposure adds the not-closed excursion minutes recorded for the
+// container during the last 24 hours to the incoming duration, and reports the
+// referenced window's allowed maximum (0 when the rule cannot be resolved).
+func (s *excursionEventService) cumulativeExposure(ctx context.Context, containerCode, windowCode string, incoming int) (int, int) {
+	cumulative := incoming
+	if total, err := s.repository.SumOpenDurationSince(ctx, containerCode, time.Now().UTC().Add(-24*time.Hour)); err == nil {
+		cumulative += int(total)
+	}
+	window, err := s.window.GetByCode(ctx, windowCode)
+	if err != nil {
+		return cumulative, 0
+	}
+	return cumulative, window.MaxExcursionMinutes
+}
+
+// quarantineContainer moves the container into quarantine after a cumulative
+// breach. A container already in quarantine is left untouched, and an
+// unregistered container never blocks keeping the excursion record.
+func (s *excursionEventService) quarantineContainer(ctx context.Context, containerCode, actor, requestID string, cumulative int) {
+	container, err := s.container.GetByCode(ctx, containerCode)
+	if err != nil {
+		return
+	}
+	target := string(constants.ContainerStateQuarantine)
+	if container.Status == target || !constants.CanTransition(constants.TransportContainerTransitions, container.Status, target) {
+		return
+	}
+	before := container.Status
+	version := container.Version
+	container.Status = target
+	container.Version = version + 1
+	container.UpdatedAt = time.Now().UTC()
+	if err := s.container.Update(ctx, container.ID, version, &container); err != nil {
+		return
+	}
+	detail, _ := json.Marshal(map[string]any{"reason": "累计超温越限自动隔离", "cumulativeMinutes": cumulative, "containerCode": containerCode})
+	_ = s.security.Audit(ctx, actor, requestID, "transition", "TransportContainer", container.ID, before, target, string(detail))
 }
 
 func (s *excursionEventService) Update(ctx context.Context, id uint, input dto.UpdateExcursionEvent, actor, requestID string) (model.ExcursionEvent, error) {
@@ -170,6 +222,12 @@ func (s *excursionEventService) Delete(ctx context.Context, id uint, actor, requ
 
 func (s *excursionEventService) StatusCounts(ctx context.Context) (map[string]int64, error) {
 	return s.repository.CountByStatus(ctx)
+}
+
+// CumulativeMinutes exposes each container's not-closed excursion minutes from the
+// last 24 hours so the excursion workbench can show the running exposure.
+func (s *excursionEventService) CumulativeMinutes(ctx context.Context) (map[string]int64, error) {
+	return s.repository.CumulativeOpenDurationByContainer(ctx, time.Now().UTC().Add(-24*time.Hour))
 }
 
 func validateExcursionEventBusinessFields(code, name, facility, owner string) error {
