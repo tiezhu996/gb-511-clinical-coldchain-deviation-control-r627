@@ -1,6 +1,6 @@
 
 import { request } from './client';
-import type { DomainRecord } from '../types/domain';
+import type { DomainRecord, ExcursionCumulative } from '../types/domain';
 
 export async function listExcursionEvent(page = 1, pageSize = 20, search = '') {
   return request<DomainRecord[]>(`/excursions?page=${page}&pageSize=${pageSize}&search=${encodeURIComponent(search)}`);
@@ -12,4 +12,8 @@ export async function transitionExcursionEvent(id: number, status: string, expec
   return request<DomainRecord>(`/excursions/${id}/transition`, {
     method: 'POST', body: JSON.stringify({ status, expectedVersion, reason }),
   });
+}
+export async function getExcursionCumulative(containerCode: string, windowCode = '') {
+  const query = `containerCode=${encodeURIComponent(containerCode)}${windowCode ? `&windowCode=${encodeURIComponent(windowCode)}` : ''}`;
+  return request<ExcursionCumulative>(`/excursions/cumulative?${query}`);
 }

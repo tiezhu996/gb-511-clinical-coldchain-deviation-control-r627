@@ -30,6 +30,7 @@ export interface DomainRecord {
   windowCode?: string;
   observedTempC?: number;
   durationMinutes?: number;
+  cumulativeMinutes?: number;
   detectedAt?: string;
   sensorEvidence?: string;
   reviewer?: string;
@@ -49,6 +50,15 @@ export interface SessionProfile { username: string; displayName: string; role: s
 export interface SensorEvidence {
   id: number; code: string; excursionCode: string; containerCode: string; objectKey: string;
   sha256: string; mediaType: string; sizeBytes: number; capturedAt: string; capturedBy: string; source: string; uploadUrl?: string;
+}
+export interface ExcursionCumulative {
+  containerCode: string;
+  windowCode: string;
+  windowHours: number;
+  cumulativeMinutes: number;
+  openEventCount: number;
+  maxAllowedMinutes: number;
+  exceeded: boolean;
 }
 export interface AuditLog {
   id: number; requestId: string; actor: string; action: string; entityType: string;
